@@ -142,9 +142,9 @@ my %config_options = (
   backend_remote              => { default => undef,         accept => [ "no", "btrfs-progs", "btrfs-progs-btrbk", "btrfs-progs-sudo", "btrfs-progs-doas" ] },
   backend_local_user          => { default => undef,         accept => [ "no", "btrfs-progs", "btrfs-progs-btrbk", "btrfs-progs-sudo", "btrfs-progs-doas" ] },
 
-  compat                      => { default => undef,     accept => [ "no", "busybox" ] },
-  compat_local                => { default => undef,     accept => [ "no", "busybox" ] },
-  compat_remote               => { default => undef,     accept => [ "no", "busybox" ] },
+  compat                      => { default => undef,     accept => [ "busybox", "ignore_receive_errors" ], allow_multiple => 1 },
+  compat_local                => { default => undef,     accept => [ "busybox", "ignore_receive_errors" ], allow_multiple => 1 },
+  compat_remote               => { default => undef,     accept => [ "busybox", "ignore_receive_errors" ], allow_multiple => 1 },
   safe_commands               => { default => undef,     accept => [ "yes", "no" ], context => [ "global" ] },
 
   snapshot_qgroup_destroy     => { default => undef,     accept => [ "yes", "no" ], context => [ "global", "volume", "subvolume" ] },
@@ -1570,6 +1570,7 @@ sub btrfs_send_receive($$;$$$)
   INFO "[send/receive] clone-src: $_->{PRINT}" foreach(@$clone_src);
 
   my $stream_options = config_stream_hash($snapshot, $target);
+  my $compat_ignore_err = config_key_lru($target, "compat", "ignore_receive_errors");
 
   my @send_options;
   my @receive_options;
@@ -1577,6 +1578,7 @@ sub btrfs_send_receive($$;$$$)
   push(@send_options, '-c', { unsafe => $_ } ) foreach(map { $_->{PATH} } @$clone_src);
   # push(@send_options, '-v') if($loglevel >= 3);
   # push(@receive_options, '-v') if($loglevel >= 3);
+  push(@receive_options, '--max-errors=0') if($compat_ignore_err);
 
   my @cmd_pipe;
   push @cmd_pipe, {
@@ -1589,7 +1591,13 @@ sub btrfs_send_receive($$;$$$)
   push @cmd_pipe, {
     cmd => vinfo_cmd($target, "btrfs receive", @receive_options, { unsafe => $target_path . '/' } ),
     rsh => vinfo_rsh($target, disable_compression => $stream_options->{stream_compress}),
-    fatal_stderr  => sub { m/^ERROR: /; }, # NOTE: btrfs-progs < 4.11: if "btrfs send" fails, "btrfs receive" returns 0!
+    fatal_stderr => sub {
+      # NOTE: btrfs-progs < 4.11: if "btrfs send" fails, "btrfs receive" returns 0!
+      if($compat_ignore_err && s/^ERROR: (.*)//) {
+        WARN "Ignoring btrfs receive error (compat=ignore_receive_errors): $1";
+      }
+      m/^ERROR: /;
+    },
   };
 
   my $send_receive_error = 0;
